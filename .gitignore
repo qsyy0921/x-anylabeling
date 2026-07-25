@@ -1,0 +1,35 @@
+# Local source mirrors used while assembling this monorepo
+/client/
+/server/
+/*.tar
+
+# Environments and caches
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+
+# Models, datasets, outputs, and logs
+/models/
+/client-app/models/
+/server-service/models/
+**/weights/
+**/datasets/
+**/outputs/
+**/logs/
+**/run/
+
+# Credentials and machine-local configuration
+**/secrets/
+**/.secrets/
+**/.env
+**/.xanylabelingrc
+**/*api_key*
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

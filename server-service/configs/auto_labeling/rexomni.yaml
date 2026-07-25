@@ -1,0 +1,19 @@
+model_id: rexomni
+display_name: "Rex-Omni"
+
+params:
+  model_path: "IDEA-Research/Rex-Omni"
+  backend: "transformers"    # vllm
+  attn_implementation: null  # flash_attention_2
+  device_map: "auto"
+  max_tokens: 4096
+  temperature: 0.0
+  top_p: 0.8
+  top_k: 1
+  repetition_penalty: 1.05
+  min_pixels: 12544    # 16 * 28 * 28
+  max_pixels: 2007040  # 2560 * 28 * 28
+
+widgets:
+  - name: remote_task_select_combobox
+    value: null

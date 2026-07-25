@@ -1,0 +1,10 @@
+enabled_models:
+  - edge_sam
+  - geco_sam_hq_vit_h
+  - groundingdino_swint_sam2_large
+  - sam2_hiera_tiny
+  - sam2.1_hiera_large_20260221
+  - sam3_vit_h
+  - sam3.1_multiplex_official
+  - sam_hq_vit_l
+  - yolov8s_sam2_hiera_base

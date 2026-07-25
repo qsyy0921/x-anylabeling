@@ -1,0 +1,15 @@
+model_id: paddleocr_vl_1_5
+display_name: "PaddleOCR-VL-1.5"
+
+params:
+  model_path: "PaddlePaddle/PaddleOCR-VL-1.5"
+  device: "cuda:0"
+  torch_dtype: "bfloat16"
+  max_new_tokens: 512
+  max_pixels: 1605632  # 1280 * 28 * 28
+  spotting_max_pixels: 1605632  # 2048 * 28 * 28
+  spotting_upscale_threshold: 1500
+
+widgets:
+  - name: remote_task_select_combobox
+    value: null

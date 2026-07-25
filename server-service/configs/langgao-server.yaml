@@ -1,0 +1,31 @@
+server:
+  host: "127.0.0.1"
+  port: 18618
+  workers: 4
+
+logging:
+  level: "INFO"
+  console_level: "INFO"
+  file_enabled: true
+  file_path: "/data/mfl/autolabel/logs/server.log"
+  rotation: "100 MB"
+  retention: "14 days"
+  format: "text"
+
+security:
+  api_key_enabled: true
+  api_key: ""
+  api_key_header: "Token"
+  cors_origins:
+    - "http://127.0.0.1:18618"
+    - "http://localhost:18618"
+
+performance:
+  request_timeout: 300
+  max_image_size: 0
+  rate_limit_enabled: false
+  rate_limit: "30/minute"
+
+concurrency:
+  max_workers: 1
+  max_queue_size: 20

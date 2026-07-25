@@ -1,0 +1,10 @@
+model_id: geco_sam_hq_vit_h
+display_name: "GeCo SAM-HQ ViT-H (GPU)"
+batch_processing_mode: "default"
+params: {}
+widgets:
+  - {name: add_pos_rect, value: null}
+  - {name: button_run_rect, value: null}
+  - {name: button_clear, value: null}
+  - {name: button_finish_object, value: null}
+  - {name: toggle_preserve_existing_annotations, value: false}

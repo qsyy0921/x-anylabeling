@@ -1,0 +1,2 @@
+- model_name: "remote_server-r20251104"
+  config_file: ":/remote_server.yaml"

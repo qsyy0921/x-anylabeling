@@ -1,0 +1,12 @@
+model_id: groundingdino_swint_sam2_large
+display_name: "GroundingDINO Swin-T + SAM2 Large (GPU)"
+batch_processing_mode: "text_prompt"
+params: {}
+widgets:
+  - {name: edit_text, value: null}
+  - {name: button_send, value: null}
+  - {name: input_conf, value: null}
+  - {name: edit_conf, value: 0.30}
+  - {name: mask_fineness_slider, value: 10}
+  - {name: mask_fineness_value_label, value: null}
+  - {name: toggle_preserve_existing_annotations, value: false}

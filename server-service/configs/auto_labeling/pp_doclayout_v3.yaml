@@ -1,0 +1,17 @@
+model_id: pp_doclayout_v3
+display_name: "PP-DocLayoutV3"
+batch_processing_mode: "default"
+
+params:
+  model_path: "PaddlePaddle/PP-DocLayoutV3_safetensors"
+  device: "cuda:0"
+
+widgets:
+  - name: button_run
+    value: null
+  - name: input_conf
+    value: null
+  - name: edit_conf
+    value: 0.5
+  - name: toggle_preserve_existing_annotations
+    value: false
