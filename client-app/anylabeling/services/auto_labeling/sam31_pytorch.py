@@ -195,7 +195,60 @@ class Sam31PyTorch(SegmentAnything):
         self.clip_net = None
         self.classes = []
         self.epsilon = float(self.config.get("epsilon", 0.001))
+        self.min_exemplar_bbox_ratio = float(
+            self.config.get("min_exemplar_bbox_ratio", 0.45)
+        )
         self._load_runtime()
+
+    def _exemplar_reference_area(self):
+        """Return the median positive rectangle area, if available."""
+        exemplar_areas = []
+        for mark in self.marks or []:
+            if mark.get("type") != "rectangle" or not bool(
+                mark.get("label", 1)
+            ):
+                continue
+            data = mark.get("data", [])
+            if len(data) < 4:
+                continue
+            width = abs(float(data[2]) - float(data[0]))
+            height = abs(float(data[3]) - float(data[1]))
+            if width > 0 and height > 0:
+                exemplar_areas.append(width * height)
+
+        if not exemplar_areas:
+            return None
+        return float(np.median(exemplar_areas))
+
+    def _filter_shapes_by_exemplar_scale(self, shapes):
+        """Drop disconnected polygons much smaller than the exemplars."""
+        reference_area = self._exemplar_reference_area()
+        if reference_area is None or self.min_exemplar_bbox_ratio <= 0:
+            return shapes
+
+        minimum_area = reference_area * self.min_exemplar_bbox_ratio
+        kept_shapes = []
+        for shape in shapes:
+            points = getattr(shape, "points", []) or []
+            if not points:
+                continue
+            cols = [float(point.x()) for point in points]
+            rows = [float(point.y()) for point in points]
+            bbox_area = float(
+                (max(cols) - min(cols) + 1)
+                * (max(rows) - min(rows) + 1)
+            )
+            if bbox_area >= minimum_area:
+                kept_shapes.append(shape)
+
+        logger.info(
+            "SAM 3.1 exemplar-scale filter kept {}/{} shapes "
+            "(minimum bbox area {:.0f})",
+            len(kept_shapes),
+            len(shapes),
+            minimum_area,
+        )
+        return kept_shapes
 
     def _load_runtime(self):
         if self.model is not None:
@@ -237,6 +290,7 @@ class Sam31PyTorch(SegmentAnything):
                 while mask_2d.ndim > 2:
                     mask_2d = mask_2d[0]
                 shapes.extend(self.post_process(mask_2d, cv_image))
+            shapes = self._filter_shapes_by_exemplar_scale(shapes)
         except Exception as error:  # noqa
             logger.warning("Could not infer with official SAM 3.1")
             logger.warning(error)
