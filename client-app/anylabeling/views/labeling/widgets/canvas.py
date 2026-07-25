@@ -152,6 +152,7 @@ class Canvas(
         self.offsets = QtCore.QPointF(), QtCore.QPointF()
         self.scale = 1.0
         self.pixmap = QtGui.QPixmap()
+        self.server_result_overlay = QtGui.QPixmap()
         self.visible = {}
         self._hide_backround = False
         self.hide_backround = False
@@ -3712,6 +3713,9 @@ class Canvas(
                     self.pixmap.height(),
                 )
 
+        if not self.server_result_overlay.isNull():
+            p.drawPixmap(0, 0, self.server_result_overlay)
+
         Shape.scale = self.scale
 
         # Draw loading/waiting screen
@@ -5120,8 +5124,29 @@ class Canvas(
         """Load pixmap"""
         self.cancel_brush_mode()
         self.pixmap = pixmap
+        self.server_result_overlay = QtGui.QPixmap()
         if clear_shapes:
             self.shapes = []
+        self.update()
+
+    def set_server_result_overlay(self, overlay, replace=True):
+        """Display a server-rendered overlay without painting every shape."""
+        if overlay is None or overlay.isNull():
+            if replace:
+                self.server_result_overlay = QtGui.QPixmap()
+            self.update()
+            return
+
+        if replace or self.server_result_overlay.isNull():
+            self.server_result_overlay = overlay
+        else:
+            combined = QtGui.QPixmap(self.pixmap.size())
+            combined.fill(Qt.GlobalColor.transparent)
+            painter = QtGui.QPainter(combined)
+            painter.drawPixmap(0, 0, self.server_result_overlay)
+            painter.drawPixmap(0, 0, overlay)
+            painter.end()
+            self.server_result_overlay = combined
         self.update()
 
     def load_shapes(self, shapes, replace=True):
@@ -5176,6 +5201,7 @@ class Canvas(
         self._clear_space_pan_state()
         self.restore_cursor()
         self.pixmap = None
+        self.server_result_overlay = QtGui.QPixmap()
         self.shapes_backups = []
         self.is_move_editing = False
         self.compare_pixmap = None

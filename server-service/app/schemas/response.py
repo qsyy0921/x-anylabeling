@@ -40,6 +40,8 @@ class PredictResponse(BaseModel):
     shapes: List[Shape] = []
     description: str = ""
     replace: Optional[bool] = None
+    preview_overlay: Optional[str] = None
+    preview_shape_count: Optional[int] = None
 
     class Config:
         extra = "allow"

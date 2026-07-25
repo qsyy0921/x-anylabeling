@@ -11,7 +11,14 @@ class DownloadCancelledError(Exception):
 
 
 class AutoLabelingResult:
-    def __init__(self, shapes, replace=True, description="", image_path=None):
+    def __init__(
+        self,
+        shapes,
+        replace=True,
+        description="",
+        image_path=None,
+        preview_overlay=None,
+    ):
         """Initialize AutoLabelingResult
 
         Args:
@@ -28,6 +35,7 @@ class AutoLabelingResult:
         self.replace = replace
         self.description = description
         self.image_path = image_path
+        self.preview_overlay = preview_overlay
 
 
 class AutoLabelingMode:

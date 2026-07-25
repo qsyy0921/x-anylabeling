@@ -6838,6 +6838,13 @@ class LabelingWidget(LabelDialog):
                 )
                 return
 
+        preview_overlay = getattr(
+            auto_labeling_result, "preview_overlay", None
+        )
+        preview_pixmap = QtGui.QPixmap()
+        if preview_overlay:
+            preview_pixmap.loadFromData(preview_overlay, "PNG")
+
         # Clear existing shapes
         if auto_labeling_result.replace:
             locked_shapes = [
@@ -6854,6 +6861,15 @@ class LabelingWidget(LabelDialog):
                     item = self.label_list.find_item_by_shape(shape)
                     self.label_list.remove_item(item)
             self.load_shapes(auto_labeling_result.shapes, replace=False)
+
+        if not preview_pixmap.isNull():
+            # Shapes remain in annotation data and the object list, but the
+            # server-rendered raster replaces expensive per-shape painting.
+            for shape in auto_labeling_result.shapes:
+                self.canvas.visible[shape] = False
+            self.canvas.set_server_result_overlay(
+                preview_pixmap, replace=auto_labeling_result.replace
+            )
 
         # Set image description
         if auto_labeling_result.description:

@@ -196,6 +196,7 @@ class RemoteServer(Model):
         params["conf_threshold"] = self.conf_threshold
         params["iou_threshold"] = self.iou_threshold
         params["epsilon_factor"] = self.epsilon_factor
+        params["_render_preview"] = True
 
         if text_prompt:
             params["text_prompt"] = text_prompt.rstrip(".")
@@ -227,9 +228,12 @@ class RemoteServer(Model):
             )
             response.raise_for_status()
             result = response.json()
-            logger.debug(f"Remote server prediction result: {result}")
-
             data = result.get("data", {})
+            logger.debug(
+                "Remote prediction returned {} shapes; server preview={}",
+                len(data.get("shapes", [])),
+                bool(data.get("preview_overlay")),
+            )
             shapes = []
             for shape_data in data.get("shapes", []):
                 shape = Shape(
@@ -256,8 +260,17 @@ class RemoteServer(Model):
             if replace is None:
                 replace = self.replace
 
+            preview_overlay = data.get("preview_overlay")
+            if preview_overlay and "," in preview_overlay:
+                preview_overlay = preview_overlay.split(",", 1)[1]
+            if preview_overlay:
+                preview_overlay = base64.b64decode(preview_overlay)
+
             return AutoLabelingResult(
-                shapes, replace=replace, description=description
+                shapes,
+                replace=replace,
+                description=description,
+                preview_overlay=preview_overlay,
             )
 
         except Exception as e:
