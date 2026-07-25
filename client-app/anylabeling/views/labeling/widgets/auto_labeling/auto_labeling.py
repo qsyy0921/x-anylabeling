@@ -235,6 +235,8 @@ class AutoLabelingWidget(QWidget):
             self.remote_task_select_combobox,
         ):
             combo.setStyleSheet(combo_style)
+        self.remote_server_select_combobox.setMinimumWidth(300)
+        self.remote_server_select_combobox.setMaximumWidth(480)
 
         # --- Configuration for: output_label ---
         self.output_label.setText(self.tr("Output"))
@@ -1499,6 +1501,7 @@ class AutoLabelingWidget(QWidget):
             self.remote_server_select_combobox.addItem(
                 display_name, userData=model_id
             )
+        self._resize_remote_model_combobox()
         self._set_combobox_tooltip(self.remote_server_select_combobox)
 
         self.remote_server_select_combobox.blockSignals(False)
@@ -1522,6 +1525,19 @@ class AutoLabelingWidget(QWidget):
                 if widget:
                     widget.hide()
             self.remote_task_select_combobox.hide()
+
+    def _resize_remote_model_combobox(self):
+        """Show complete model names without taking over the toolbar."""
+        combo = self.remote_server_select_combobox
+        if combo.count() == 0:
+            return
+        text_width = max(
+            combo.fontMetrics().horizontalAdvance(combo.itemText(index))
+            for index in range(combo.count())
+        )
+        popup_width = min(max(text_width + 56, 300), 640)
+        combo.view().setMinimumWidth(popup_width)
+        combo.setMinimumWidth(min(popup_width, 480))
 
     @pyqtSlot()
     def on_task_changed(self):
@@ -1695,9 +1711,12 @@ class AutoLabelingWidget(QWidget):
     def on_button_add_rect_clicked(self):
         """Handle button_add_rect click"""
         self.skip_auto_prediction = False
-        self.set_auto_labeling_mode(
+        mode = AutoLabelingMode(
             AutoLabelingMode.ADD, AutoLabelingMode.RECTANGLE
         )
+        self.auto_labeling_mode = mode
+        self.auto_labeling_mode_changed.emit(mode)
+        self.parent.canvas.set_auto_labeling_mode(mode)
 
     def on_add_pos_rect_clicked(self):
         """Handle add_pos_rect click"""
@@ -1710,9 +1729,12 @@ class AutoLabelingWidget(QWidget):
             self.set_auto_labeling_mode(None, None)
         else:
             self.skip_auto_prediction = True
-            self.set_auto_labeling_mode(
+            mode = AutoLabelingMode(
                 AutoLabelingMode.ADD, AutoLabelingMode.RECTANGLE
             )
+            self.auto_labeling_mode = mode
+            self.auto_labeling_mode_changed.emit(mode)
+            self.parent.canvas.set_auto_labeling_mode(mode)
 
     def on_add_neg_rect_clicked(self):
         """Handle add_neg_rect click"""

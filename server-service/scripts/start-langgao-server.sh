@@ -16,65 +16,11 @@ if [[ ! -s "$TOKEN_FILE" ]]; then
     exit 1
 fi
 
-MAX_WORKERS="${AUTOLABEL_MAX_WORKERS:-4}"
 MIN_FREE_MB="${AUTOLABEL_MIN_FREE_MB:-8192}"
 MAX_UTIL="${AUTOLABEL_MAX_UTIL:-50}"
 
-if ! [[ "$MAX_WORKERS" =~ ^[0-9]+$ ]]; then
-    echo "AUTOLABEL_MAX_WORKERS must be an integer." >&2
-    exit 1
-fi
-if (( MAX_WORKERS < 1 )); then
-    MAX_WORKERS=1
-elif (( MAX_WORKERS > 4 )); then
-    MAX_WORKERS=4
-fi
-
-ELIGIBLE_GPU_COUNT="$(
-    nvidia-smi \
-        --query-gpu=index,memory.free,utilization.gpu \
-        --format=csv,noheader,nounits |
-    awk -F, \
-        -v min_free="$MIN_FREE_MB" \
-        -v max_util="$MAX_UTIL" \
-        -v allowed="${AUTOLABEL_GPU_ID:-}" '
-        function is_allowed(id, values, count, i) {
-            if (allowed == "") {
-                return 1;
-            }
-            count = split(allowed, values, ",");
-            for (i = 1; i <= count; i++) {
-                gsub(/ /, "", values[i]);
-                if (values[i] == id) {
-                    return 1;
-                }
-            }
-            return 0;
-        }
-        {
-            gsub(/ /, "", $1);
-            gsub(/ /, "", $2);
-            gsub(/ /, "", $3);
-            if (is_allowed($1) && ($2 + 0) >= min_free &&
-                ($3 + 0) < max_util) {
-                eligible += 1;
-            }
-        }
-        END {
-            print eligible + 0;
-        }
-    '
-)"
-
-if (( ELIGIBLE_GPU_COUNT < 1 )); then
-    EFFECTIVE_WORKERS=1
-    echo "No GPU meets the preferred thresholds; starting one fallback worker." >&2
-else
-    EFFECTIVE_WORKERS="$MAX_WORKERS"
-fi
-
 unset CUDA_VISIBLE_DEVICES
-export AUTOLABEL_EFFECTIVE_WORKERS="$EFFECTIVE_WORKERS"
+export AUTOLABEL_EFFECTIVE_WORKERS=1
 export AUTOLABEL_MIN_FREE_MB="$MIN_FREE_MB"
 export AUTOLABEL_MAX_UTIL="$MAX_UTIL"
 export HOME="$ROOT"
@@ -96,8 +42,8 @@ export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$SERVER:$ROOT/src-official-v4.0.0-beta.13:$ROOT/runtime/python-gpu-site-packages:$ROOT/runtime${PYTHONPATH:+:$PYTHONPATH}"
 
-echo "Starting Langgao AutoLabel server with $EFFECTIVE_WORKERS worker(s)" >&2
-echo "GPU policy: 60% utilization + 40% memory pressure, with soft per-worker reservations" >&2
+echo "Starting Langgao AutoLabel server with one worker and a bounded request queue" >&2
+echo "GPU policy: select the least-loaded eligible GPU using utilization and free memory" >&2
 echo "Listening on 127.0.0.1:18618 (SSH tunnel required)" >&2
 
 cd "$SERVER"

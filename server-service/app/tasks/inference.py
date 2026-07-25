@@ -24,6 +24,7 @@ class InferenceExecutor:
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.max_queue_size = max_queue_size
         self._queue_size = 0
+        self._queue_lock = asyncio.Lock()
 
     async def execute(
         self, model_id: str, image: np.ndarray, params: Dict[str, Any]
@@ -41,18 +42,29 @@ class InferenceExecutor:
         Raises:
             RuntimeError: If queue is full.
         """
-        if self._queue_size >= self.max_queue_size:
-            raise RuntimeError("Task queue is full")
+        async with self._queue_lock:
+            if self._queue_size >= self.max_queue_size:
+                raise RuntimeError("Task queue is full")
+            self._queue_size += 1
+            queue_position = self._queue_size
 
-        self._queue_size += 1
+        logger.info(
+            "Inference request queued: model={}, position={}/{}",
+            model_id,
+            queue_position,
+            self.max_queue_size,
+        )
         try:
-            loop = asyncio.get_event_loop()
+            # A single executor thread preserves FIFO ordering and prevents
+            # concurrent CUDA access while keeping the HTTP event loop alive.
+            loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 self.executor, self._run_inference, model_id, image, params
             )
             return result
         finally:
-            self._queue_size -= 1
+            async with self._queue_lock:
+                self._queue_size -= 1
 
     def _run_inference(
         self, model_id: str, image: np.ndarray, params: Dict[str, Any]
