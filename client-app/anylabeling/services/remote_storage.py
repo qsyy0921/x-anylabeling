@@ -84,3 +84,45 @@ class RemoteStorageClient:
             )
         response.raise_for_status()
         return response.json()["data"]
+
+    def list_model_registry(self) -> list[dict]:
+        response = requests.get(
+            f"{self.server_url}/v1/model-registry",
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()["data"]["models"]
+
+    def install_registry_model(self, model_id: str) -> dict:
+        response = requests.post(
+            f"{self.server_url}/v1/model-registry/{model_id}/install",
+            headers={
+                **self.headers,
+                "X-Model-Upload-Token": self._model_admin_token(),
+            },
+            timeout=max(self.timeout, 7200),
+        )
+        response.raise_for_status()
+        return response.json()["data"]
+
+    def enable_registry_model(self, model_id: str) -> dict:
+        response = requests.post(
+            f"{self.server_url}/v1/model-registry/{model_id}/enable",
+            headers={
+                **self.headers,
+                "X-Model-Upload-Token": self._model_admin_token(),
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()["data"]
+
+    @staticmethod
+    def _model_admin_token() -> str:
+        token = os.getenv("XANYLABELING_MODEL_UPLOAD_API_KEY", "")
+        if not token:
+            raise RuntimeError(
+                "This client does not have the server model-management credential."
+            )
+        return token

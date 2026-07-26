@@ -83,6 +83,7 @@ from .widgets import (
     PPOCRDialog,
     VideoClassifierDialog,
     ShapeModifyDialog,
+    ServerModelRegistryDialog,
     GroupIDFilterComboBox,
     LabelDialog,
     LabelFilterComboBox,
@@ -567,6 +568,13 @@ class LabelingWidget(LabelDialog):
             None,
             "label",
             self.tr("Upload a model package to server staging"),
+        )
+        server_model_registry = action(
+            self.tr("Server Model Registry"),
+            self.open_server_model_registry,
+            None,
+            "label",
+            self.tr("Browse and install curated server-side models"),
         )
         open_next_image = action(
             self.tr("Next Image"),
@@ -1779,6 +1787,7 @@ class LabelingWidget(LabelDialog):
             open_dir=opendir,
             open_server_dir=open_server_dir,
             upload_server_model=upload_server_model,
+            server_model_registry=server_model_registry,
             close=close,
             toggle_compare_view=toggle_compare_view,
             delete_file=delete_file,
@@ -2100,6 +2109,7 @@ class LabelingWidget(LabelDialog):
         utils.add_actions(
             self.menus.upload,
             (
+                server_model_registry,
                 upload_server_model,
                 None,
                 upload_image_flags_file,
@@ -6691,6 +6701,10 @@ class LabelingWidget(LabelDialog):
             )
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
+
+    def open_server_model_registry(self):
+        dialog = ServerModelRegistryDialog(self)
+        dialog.exec()
 
     def open_folder_dialog(self, _value=False, dirpath=None):
         if not self.may_continue():

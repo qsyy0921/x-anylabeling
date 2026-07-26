@@ -1,0 +1,82 @@
+schema_version: 1
+models:
+  - model_id: edge_sam
+    display_name: EdgeSAM (GPU)
+    description: Lightweight visual-prompt segmentation.
+    target_dir: edge_sam
+    source:
+      provider: modelscope
+      model_id: CVHub520/edge_sam
+      revision: master
+
+  - model_id: geco_sam_hq_vit_h
+    display_name: GeCo + SAM-HQ ViT-H (GPU)
+    description: Visual-prompt counting and segmentation.
+    target_dir: geco_sam_hq_vit_h
+    source:
+      provider: modelscope
+      model_id: CVHub520/geco_sam_hq_vit_h
+      revision: master
+
+  - model_id: groundingdino_swint_sam2_large
+    display_name: GroundingDINO Swin-T + SAM2 Large (GPU)
+    description: Text-grounded detection and segmentation.
+    target_dir: groundingdino_swint_sam2_large
+    source:
+      provider: modelscope
+      model_id: CVHub520/groundingdino_swint_sam2_large
+      revision: master
+
+  - model_id: sam2_hiera_tiny
+    display_name: SAM2.1 Hiera Tiny (GPU)
+    description: Fast visual-prompt segmentation.
+    target_dir: sam2_hiera_tiny
+    source:
+      provider: modelscope
+      model_id: CVHub520/sam2_hiera_tiny
+      revision: master
+
+  - model_id: sam2.1_hiera_large_20260221
+    display_name: SAM2.1 Hiera Large (GPU)
+    description: High-quality visual-prompt segmentation.
+    target_dir: sam2.1_hiera_large_20260221
+    source:
+      provider: modelscope
+      model_id: CVHub520/sam2_hiera_large
+      revision: master
+
+  - model_id: sam3_vit_h
+    display_name: SAM3 ViT-H (GPU)
+    description: Text and visual-prompt segmentation.
+    target_dir: sam3_vit_h
+    source:
+      provider: modelscope
+      model_id: CVHub520/sam3_vit_h
+      revision: master
+
+  - model_id: sam3.1_multiplex_official
+    display_name: SAM3.1 Multiplex Official (GPU)
+    description: Official PyTorch SAM3.1 visual-prompt model.
+    target_dir: sam3.1_multiplex_official
+    source:
+      provider: modelscope
+      model_id: facebook/sam3.1
+      revision: master
+
+  - model_id: sam_hq_vit_l
+    display_name: SAM-HQ ViT-L (GPU)
+    description: High-quality visual-prompt segmentation.
+    target_dir: sam_hq_vit_l
+    source:
+      provider: modelscope
+      model_id: CVHub520/sam_hq_vit_l
+      revision: master
+
+  - model_id: yolov8s_sam2_hiera_base
+    display_name: YOLOv8s + SAM2 Hiera Base (GPU)
+    description: Automatic detection followed by segmentation.
+    target_dir: yolov8s_sam2_hiera_base
+    source:
+      provider: modelscope
+      model_id: CVHub520/yolov8s_sam2_hiera_base
+      revision: master

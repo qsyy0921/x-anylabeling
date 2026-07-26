@@ -14,7 +14,7 @@ from app.core.middleware import (
 )
 from app.core.registry import ModelRegistry
 from app.tasks.inference import InferenceExecutor
-from app.api import health, models, predict, storage, video
+from app.api import health, model_registry, models, predict, storage, video
 from app.utils.update_checker import check_for_updates_async
 
 settings, _ = get_settings()
@@ -94,6 +94,7 @@ app.add_middleware(
 
 app.include_router(health.router, tags=["Health"])
 app.include_router(models.router, tags=["Models"])
+app.include_router(model_registry.router, tags=["Model Registry"])
 app.include_router(predict.router, tags=["Prediction"])
 app.include_router(storage.router, tags=["Storage"])
 app.include_router(video.router, tags=["Video"])
