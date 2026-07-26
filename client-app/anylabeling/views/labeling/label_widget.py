@@ -136,6 +136,49 @@ def _find_next_label_loop_shape(shapes, start_index, canvas_shapes):
     return len(shapes), None
 
 
+def _reorder_layer_items(items, selected_items, operation):
+    """Return items reordered for a layer operation.
+
+    Canvas shapes are painted in list order, so the final item is the top layer.
+    """
+    ordered = list(items)
+    selected_ids = {id(item) for item in selected_items}
+    if not selected_ids:
+        return ordered
+
+    if operation == "top":
+        return [item for item in ordered if id(item) not in selected_ids] + [
+            item for item in ordered if id(item) in selected_ids
+        ]
+    if operation == "bottom":
+        return [item for item in ordered if id(item) in selected_ids] + [
+            item for item in ordered if id(item) not in selected_ids
+        ]
+    if operation == "up":
+        for index in range(len(ordered) - 2, -1, -1):
+            if (
+                id(ordered[index]) in selected_ids
+                and id(ordered[index + 1]) not in selected_ids
+            ):
+                ordered[index], ordered[index + 1] = (
+                    ordered[index + 1],
+                    ordered[index],
+                )
+        return ordered
+    if operation == "down":
+        for index in range(1, len(ordered)):
+            if (
+                id(ordered[index]) in selected_ids
+                and id(ordered[index - 1]) not in selected_ids
+            ):
+                ordered[index], ordered[index - 1] = (
+                    ordered[index - 1],
+                    ordered[index],
+                )
+        return ordered
+    raise ValueError(f"Unsupported layer operation: {operation}")
+
+
 def _create_file_status_icon(color):
     pixmap = QtGui.QPixmap(12, 12)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -330,6 +373,9 @@ class LabelingWidget(LabelDialog):
         self.label_list.item_selection_changed.connect(
             self.label_selection_changed
         )
+        self.label_list.item_selection_changed.connect(
+            self._update_layer_buttons
+        )
         self.label_list.item_double_clicked.connect(self.edit_label)
         self.label_list.items_lock_requested.connect(
             self.toggle_label_items_lock
@@ -337,10 +383,41 @@ class LabelingWidget(LabelDialog):
         self.label_list.item_changed.connect(self.label_item_changed)
         self.label_list.item_dropped.connect(self.label_order_changed)
         self.shape_dock = QtWidgets.QDockWidget(self.tr("Objects"), self)
-        self.shape_dock.setWidget(self.label_list)
+        self.layer_buttons = {}
+        shape_panel = QWidget()
+        shape_panel_layout = QVBoxLayout(shape_panel)
+        shape_panel_layout.setContentsMargins(0, 0, 0, 0)
+        shape_panel_layout.setSpacing(4)
+        shape_panel_layout.addWidget(self.label_list, 1)
+        layer_button_layout = QHBoxLayout()
+        layer_button_layout.setContentsMargins(4, 0, 4, 4)
+        layer_button_layout.setSpacing(3)
+        layer_actions = (
+            ("bottom", "置底", self.tr("Send selected objects to bottom")),
+            ("down", "下移", self.tr("Move selected objects down one layer")),
+            ("up", "上移", self.tr("Move selected objects up one layer")),
+            ("top", "置顶", self.tr("Bring selected objects to top")),
+        )
+        for operation, text, tooltip in layer_actions:
+            button = QtWidgets.QToolButton()
+            button.setText(text)
+            button.setToolTip(tooltip)
+            button.setEnabled(False)
+            button.clicked.connect(
+                lambda _checked=False, op=operation: self.move_selected_layers(
+                    op
+                )
+            )
+            layer_button_layout.addWidget(button)
+            self.layer_buttons[operation] = button
+        shape_panel_layout.addLayout(layer_button_layout)
+        self.shape_dock.setWidget(shape_panel)
         self.shape_dock.setStyleSheet(get_dock_style())
 
         self.unique_label_list = UniqueLabelQListWidget()
+        self.unique_label_list.label_text_visibility_changed.connect(
+            self.set_label_class_text_visibility
+        )
         self.unique_label_list.setToolTip(
             self.tr(
                 "Select label to start annotating for it. "
@@ -353,7 +430,7 @@ class LabelingWidget(LabelDialog):
         self.label_dock.setWidget(self.unique_label_list)
         self.label_dock.setStyleSheet(get_dock_style())
         self.unique_label_list.setStyleSheet(
-            "QListWidget::item { padding: 0; }"
+            "QListWidget::item { padding: 4px 6px; }"
         )
 
         self.shape_text_label = QLabel("Object Text")
@@ -470,6 +547,12 @@ class LabelingWidget(LabelDialog):
                 "double_click_edit_label", True
             ),
         )
+        for index in range(self.unique_label_list.count()):
+            item = self.unique_label_list.item(index)
+            self.set_label_class_text_visibility(
+                item.data(Qt.ItemDataRole.UserRole),
+                item.checkState() == Qt.CheckState.Checked,
+            )
         self.canvas.zoom_request.connect(self.zoom_request)
 
         # Compare view support
@@ -5227,6 +5310,49 @@ class LabelingWidget(LabelDialog):
             else:
                 self.canvas.deselect_shape()
 
+    def _update_layer_buttons(self, *_args):
+        enabled = bool(self.label_list.selected_items())
+        for button in self.layer_buttons.values():
+            button.setEnabled(enabled)
+
+    def set_label_class_text_visibility(self, label, visible):
+        if not label:
+            return
+        if label in self.label_info:
+            self.label_info[label]["text_visible"] = bool(visible)
+        if hasattr(self, "canvas"):
+            self.canvas.set_label_text_visible(label, visible)
+
+    def move_selected_layers(self, operation):
+        selected_items = self.label_list.selected_items()
+        current_items = list(self.label_list)
+        reordered_items = _reorder_layer_items(
+            current_items, selected_items, operation
+        )
+        if reordered_items == current_items:
+            return
+
+        model = self.label_list.model()
+        blocker = QtCore.QSignalBlocker(model)
+        rows_by_item_id = {}
+        while model.rowCount():
+            row = model.takeRow(0)
+            rows_by_item_id[id(row[0])] = row
+        for item in reordered_items:
+            model.appendRow(rows_by_item_id[id(item)])
+        del blocker
+
+        self.label_list.clearSelection()
+        for item in selected_items:
+            self.label_list.select_item(item)
+        selected_shapes = [item.shape() for item in selected_items]
+        self.canvas.load_shapes(
+            [item.shape() for item in reordered_items], replace=True
+        )
+        self.canvas.select_shapes(selected_shapes)
+        self.set_dirty()
+        self._schedule_server_overlay_sync()
+
     def label_item_changed(self, item):
         shape = item.shape()
         shape.visible = item.checkState() == Qt.CheckState.Checked
@@ -5244,6 +5370,7 @@ class LabelingWidget(LabelDialog):
     def label_order_changed(self):
         self.set_dirty()
         self.canvas.load_shapes([item.shape() for item in self.label_list])
+        self._schedule_server_overlay_sync()
 
     # Callback functions:
     def new_shape(self):

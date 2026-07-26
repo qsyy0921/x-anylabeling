@@ -1,14 +1,27 @@
 # -*- encoding: utf-8 -*-
 
-import html
-
-from PyQt6 import QtWidgets, QtGui
+from PyQt6 import QtCore, QtWidgets, QtGui
 from PyQt6.QtCore import Qt
 
 from .escapable_qlist_widget import EscapableQListWidget
 
 
 class UniqueLabelQListWidget(EscapableQListWidget):
+    label_text_visibility_changed = QtCore.pyqtSignal(str, bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._label_text_visibility = {}
+        self.itemChanged.connect(self._on_item_changed)
+
+    def _on_item_changed(self, item):
+        label = item.data(Qt.ItemDataRole.UserRole)
+        if label is None:
+            return
+        visible = item.checkState() == Qt.CheckState.Checked
+        self._label_text_visibility[label] = visible
+        self.label_text_visibility_changed.emit(label, visible)
+
     # QT Overload
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
@@ -24,49 +37,32 @@ class UniqueLabelQListWidget(EscapableQListWidget):
         return items
 
     def create_item_from_label(self, label):
-        item = QtWidgets.QListWidgetItem()
+        item = QtWidgets.QListWidgetItem(label)
         item.setData(Qt.ItemDataRole.UserRole, label)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(
+            Qt.CheckState.Checked
+            if self._label_text_visibility.get(label, True)
+            else Qt.CheckState.Unchecked
+        )
+        item.setToolTip(
+            self.tr("Checked: show text for this label class")
+        )
         return item
 
     def set_item_label(self, item, label, color=None, opacity=255):
-        qlabel = QtWidgets.QLabel()
-        qlabel.setContentsMargins(8, 4, 8, 4)
-        if color is None:
-            qlabel.setText(f"{label}")
-        else:
-            qlabel.setText("{}".format(html.escape(label)))
+        item.setText(label)
+        if color is not None:
             background_color = QtGui.QColor(*color, opacity)
-            style_sheet = (
-                f"background-color: rgba("
-                f"{background_color.red()}, "
-                f"{background_color.green()}, "
-                f"{background_color.blue()}, "
-                f"{background_color.alpha()}"
-                ");"
-            )
-            qlabel.setStyleSheet(style_sheet)
-        qlabel.setAlignment(
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
-        )
-        item.setSizeHint(qlabel.sizeHint())
-        self.setItemWidget(item, qlabel)
+            item.setBackground(QtGui.QBrush(background_color))
+        item.setSizeHint(QtCore.QSize(0, max(28, item.sizeHint().height())))
 
     def update_item_color(self, label, color, opacity=255):
         items = self.find_items_by_label(label)
         for item in items:
-            qlabel = self.itemWidget(item)
-            if qlabel:
-                background_color = QtGui.QColor(*color, opacity)
-                style_sheet = (
-                    f"background-color: rgba("
-                    f"{background_color.red()}, "
-                    f"{background_color.green()}, "
-                    f"{background_color.blue()}, "
-                    f"{background_color.alpha()}"
-                    ");"
-                )
-                qlabel.setStyleSheet(style_sheet)
-                break
+            background_color = QtGui.QColor(*color, opacity)
+            item.setBackground(QtGui.QBrush(background_color))
+            break
 
     def remove_items_by_label(self, label):
         items = self.find_items_by_label(label)

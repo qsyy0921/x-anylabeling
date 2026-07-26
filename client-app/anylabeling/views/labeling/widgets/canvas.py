@@ -203,6 +203,7 @@ class Canvas(
         self.show_masks = True
         self.show_texts = True
         self.show_labels = True
+        self.label_text_visibility = {}
         self.show_scores = True
         self.show_degrees = False
         self.show_attributes = True
@@ -4068,6 +4069,8 @@ class Canvas(
             for shape in self.shapes:
                 if not shape.visible:
                     continue
+                if not self.label_text_visibility.get(shape.label, True):
+                    continue
                 description = shape.description
                 if description:
                     bbox = shape.bounding_rect()
@@ -4124,6 +4127,8 @@ class Canvas(
             labels = []
             for shape in self.shapes:
                 if not shape.visible:
+                    continue
+                if not self.label_text_visibility.get(shape.label, True):
                     continue
                 d_react = shape.point_size / shape.scale
                 if shape.label in [
@@ -5170,6 +5175,11 @@ class Canvas(
     def set_shape_visible(self, shape, value):
         """Set visibility for a shape"""
         self.visible[shape] = value
+        self.update()
+
+    def set_label_text_visible(self, label, visible):
+        """Set text visibility for all shapes in one label class."""
+        self.label_text_visibility[label] = bool(visible)
         self.update()
 
     def current_cursor(self):
