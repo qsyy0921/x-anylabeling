@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import base64
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlparse
 
 import requests
 
 
 class RemoteStorageClient:
     """Authenticated client for server datasets and staged model uploads."""
+
+    URI_SCHEME = "server"
 
     def __init__(self) -> None:
         self.server_url = os.getenv(
@@ -30,41 +33,96 @@ class RemoteStorageClient:
     def list_files(self, server_path: str) -> list[dict]:
         response = requests.get(
             f"{self.server_url}/v1/data/files",
-            params={"path": server_path, "recursive": "true"},
+            params={
+                "path": self.normalize_server_path(server_path),
+                "recursive": "true",
+            },
             headers=self.headers,
             timeout=self.timeout,
         )
         response.raise_for_status()
         return response.json()["data"]["files"]
 
-    def sync_dataset(self, server_path: str, cache_root: Path) -> Path:
-        files = self.list_files(server_path)
-        target_root = cache_root / Path(server_path)
-        for item in files:
-            relative = Path(item["path"])
-            destination = cache_root / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                if destination.suffix.lower() in {".json", ".txt", ".yaml", ".yml"}:
-                    # Never overwrite annotations edited on the client.
-                    continue
-                if destination.stat().st_size == int(item["size"]):
-                    continue
-            partial = destination.with_suffix(destination.suffix + ".part")
-            with requests.get(
-                f"{self.server_url}/v1/data/file",
-                params={"path": item["path"]},
-                headers=self.headers,
-                timeout=self.timeout,
-                stream=True,
-            ) as response:
-                response.raise_for_status()
-                with partial.open("wb") as output:
-                    for chunk in response.iter_content(1024 * 1024):
-                        if chunk:
-                            output.write(chunk)
-            partial.replace(destination)
-        return target_root
+    @classmethod
+    def is_server_uri(cls, value: str | os.PathLike | None) -> bool:
+        return str(value or "").lower().startswith(f"{cls.URI_SCHEME}://")
+
+    @classmethod
+    def normalize_server_path(cls, value: str | os.PathLike) -> str:
+        raw = str(value).strip().replace("\\", "/")
+        if cls.is_server_uri(raw):
+            parsed = urlparse(raw)
+            raw = f"{parsed.netloc}{parsed.path}"
+        raw = unquote(raw).strip("/")
+        data_root = os.getenv(
+            "XANYLABELING_SERVER_DATA_ROOT", "/data/mfl/langgao"
+        ).replace("\\", "/").rstrip("/")
+        if raw == data_root.lstrip("/"):
+            return ""
+        if raw.startswith(data_root.lstrip("/") + "/"):
+            raw = raw[len(data_root.lstrip("/")) + 1 :]
+        return PurePosixPath(raw or ".").as_posix().lstrip("./")
+
+    @classmethod
+    def server_uri(cls, server_path: str | os.PathLike) -> str:
+        return f"{cls.URI_SCHEME}://{cls.normalize_server_path(server_path)}"
+
+    @classmethod
+    def label_uri(cls, image_uri: str) -> str:
+        path = PurePosixPath(cls.normalize_server_path(image_uri))
+        return cls.server_uri(path.with_suffix(".json"))
+
+    def read_file(self, server_path: str) -> bytes:
+        response = requests.get(
+            f"{self.server_url}/v1/data/file",
+            params={"path": self.normalize_server_path(server_path)},
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.content
+
+    def get_annotation(self, image_path: str) -> dict:
+        response = requests.get(
+            f"{self.server_url}/v1/data/annotation",
+            params={"image_path": self.normalize_server_path(image_path)},
+            headers=self.headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()["data"]
+
+    def save_annotation(
+        self,
+        image_path: str,
+        annotation: dict,
+        expected_revision: str | None,
+    ) -> dict:
+        headers = dict(self.headers)
+        headers["If-Match"] = expected_revision or "__missing__"
+        response = requests.put(
+            f"{self.server_url}/v1/data/annotation",
+            params={"image_path": self.normalize_server_path(image_path)},
+            headers=headers,
+            json=annotation,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()["data"]
+
+    def delete_annotation(
+        self, image_path: str, expected_revision: str | None
+    ) -> dict:
+        headers = dict(self.headers)
+        headers["If-Match"] = expected_revision or "__missing__"
+        response = requests.delete(
+            f"{self.server_url}/v1/data/annotation",
+            params={"image_path": self.normalize_server_path(image_path)},
+            headers=headers,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()["data"]
 
     def upload_model(self, archive_path: Path) -> dict:
         upload_token = os.getenv("XANYLABELING_MODEL_UPLOAD_API_KEY", "")

@@ -7,7 +7,8 @@ class PredictRequest(BaseModel):
     """Request schema for prediction endpoint."""
 
     model: str
-    image: str
+    image: str = ""
+    server_image_path: Optional[str] = None
     params: Dict[str, Any] = {}
 
 

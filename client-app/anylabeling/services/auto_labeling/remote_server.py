@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QApplication
 from anylabeling.views.labeling.shape import Shape
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.utils.opencv import qt_img_to_rgb_cv_img
+from anylabeling.services.remote_storage import RemoteStorageClient
 from .model import Model
 from .types import AutoLabelingResult
 
@@ -166,7 +167,13 @@ class RemoteServer(Model):
             logger.info("Starting video propagation...")
             return self._handle_video_propagation()
 
-        if image_path and os.path.exists(image_path):
+        server_image_path = None
+        if RemoteStorageClient.is_server_uri(image_path):
+            server_image_path = RemoteStorageClient.normalize_server_path(
+                image_path
+            )
+            img_data_uri = ""
+        elif image_path and os.path.exists(image_path):
             with open(image_path, "rb") as f:
                 img_base64 = base64.b64encode(f.read()).decode("utf-8")
             ext = os.path.splitext(image_path)[1].lower()
@@ -213,6 +220,8 @@ class RemoteServer(Model):
             "image": img_data_uri,
             "params": params,
         }
+        if server_image_path:
+            payload["server_image_path"] = server_image_path
         logger.debug(
             f"Sending request to {self.predict_url} with payload: "
             f"model: {self.current_model_id}, "

@@ -66,10 +66,26 @@ class LabelFile:
         try:
             with utils.io_open(filename, "r") as f:
                 data = json.load(f)
+            self.load_data(data, filename=filename)
+        except Exception as e:  # noqa
+            raise LabelFileError(e) from e
+
+    def load_data(
+        self,
+        data,
+        *,
+        image_data=None,
+        filename=None,
+        image_dir=None,
+    ):
+        """Load a label document and optional image bytes without local files."""
+        try:
+            data = dict(data)
 
             if data.get("version") is None:
                 logger.warning(
-                    f"Loading JSON file ({filename}) of unknown version"
+                    f"Loading JSON label ({filename or '<memory>'}) "
+                    "of unknown version"
                 )
 
             if data["shapes"]:
@@ -92,14 +108,21 @@ class LabelFile:
                 image_data = base64.b64decode(data["imageData"])
                 image_data_b64 = data["imageData"]
             else:
-                # relative path from label file to relative path from cwd
-                if self.image_dir:
-                    image_path = osp.join(self.image_dir, data["imagePath"])
-                else:
-                    image_path = osp.join(
-                        osp.dirname(filename), data["imagePath"]
+                effective_image_dir = image_dir or self.image_dir
+                if image_data is None and filename is not None:
+                    if effective_image_dir:
+                        image_path = osp.join(
+                            effective_image_dir, data["imagePath"]
+                        )
+                    else:
+                        image_path = osp.join(
+                            osp.dirname(filename), data["imagePath"]
+                        )
+                    image_data = self.load_image_file(image_path)
+                if image_data is None:
+                    raise LabelFileError(
+                        "Image bytes are required for an in-memory label"
                     )
-                image_data = self.load_image_file(image_path)
                 image_data_b64 = base64.b64encode(image_data).decode("utf-8")
 
             flags = data.get("flags", {})
@@ -133,9 +156,9 @@ class LabelFile:
         self.filename = filename
         self.other_data = other_data
 
-    def save(
-        self,
-        filename=None,
+    @staticmethod
+    def create_data(
+        *,
         shapes=None,
         image_path=None,
         image_height=None,
@@ -144,9 +167,11 @@ class LabelFile:
         other_data=None,
         flags=None,
     ):
+        """Build a serializable X-AnyLabeling annotation document."""
+        shapes = list(shapes or [])
         if image_data is not None:
             image_data = base64.b64encode(image_data).decode("utf-8")
-            image_height, image_width = self._check_image_height_and_width(
+            image_height, image_width = LabelFile._check_image_height_and_width(
                 image_data, image_height, image_width
             )
 
@@ -184,6 +209,28 @@ class LabelFile:
                 continue
             assert key not in data
             data[key] = value
+        return data
+
+    def save(
+        self,
+        filename=None,
+        shapes=None,
+        image_path=None,
+        image_height=None,
+        image_width=None,
+        image_data=None,
+        other_data=None,
+        flags=None,
+    ):
+        data = self.create_data(
+            shapes=shapes,
+            image_path=image_path,
+            image_height=image_height,
+            image_width=image_width,
+            image_data=image_data,
+            other_data=other_data,
+            flags=flags,
+        )
         try:
             with utils.io_open(filename, "w") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)

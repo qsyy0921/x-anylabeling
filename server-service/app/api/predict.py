@@ -1,4 +1,6 @@
 import base64
+import os
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -111,14 +113,25 @@ async def predict(request: PredictRequest):
         )
 
     try:
-        image_data = (
-            request.image.split(",")[1]
-            if "," in request.image
-            else request.image
-        )
-        image_bytes = base64.b64decode(image_data)
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if request.server_image_path:
+            from app.api.storage import _resolve_under
+
+            data_root = Path(
+                os.getenv("AUTOLABEL_DATA_ROOT", "/data/mfl/langgao")
+            ).expanduser().resolve()
+            server_image = _resolve_under(
+                data_root, request.server_image_path
+            )
+            image = cv2.imread(str(server_image), cv2.IMREAD_COLOR)
+        else:
+            image_data = (
+                request.image.split(",")[1]
+                if "," in request.image
+                else request.image
+            )
+            image_bytes = base64.b64decode(image_data)
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
         if image is None:
             return ErrorResponse(

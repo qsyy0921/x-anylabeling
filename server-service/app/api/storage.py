@@ -1,20 +1,29 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import secrets
 import shutil
+import threading
 import time
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
 
 from app.schemas.response import SuccessResponse
-
 
 router = APIRouter()
 
@@ -41,6 +50,8 @@ MAX_MODEL_UNPACKED_BYTES = int(
     os.getenv("AUTOLABEL_MAX_MODEL_UNPACKED_BYTES", str(50 * 1024**3))
 )
 MAX_MODEL_MEMBERS = int(os.getenv("AUTOLABEL_MAX_MODEL_MEMBERS", "2000"))
+_ANNOTATION_LOCKS: dict[str, threading.Lock] = {}
+_ANNOTATION_LOCKS_GUARD = threading.Lock()
 
 
 def _root_from_env(name: str, default: str) -> Path:
@@ -50,8 +61,19 @@ def _root_from_env(name: str, default: str) -> Path:
 
 
 def _resolve_under(root: Path, relative_path: str, must_exist: bool = True) -> Path:
-    relative = Path(relative_path or ".")
-    if relative.is_absolute() or ".." in relative.parts:
+    raw_path = str(relative_path or ".").replace("\\", "/")
+    if raw_path.startswith("server://"):
+        raw_path = raw_path[len("server://") :]
+    candidate_input = Path(raw_path)
+    if candidate_input.is_absolute():
+        try:
+            candidate_input = candidate_input.resolve().relative_to(root)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="Path escapes storage root"
+            ) from exc
+    relative = Path(candidate_input)
+    if ".." in relative.parts:
         raise HTTPException(status_code=400, detail="Invalid relative path")
     candidate = (root / relative).resolve()
     try:
@@ -66,6 +88,78 @@ def _resolve_under(root: Path, relative_path: str, must_exist: bool = True) -> P
 def _relative_text(path: Path, root: Path) -> str:
     value = path.relative_to(root).as_posix()
     return "" if value == "." else value
+
+
+def _file_revision(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _annotation_path_for_image(root: Path, image_path: str) -> tuple[Path, Path]:
+    image = _resolve_under(root, image_path)
+    if not image.is_file() or image.suffix.lower() not in IMAGE_SUFFIXES:
+        raise HTTPException(status_code=415, detail="Path is not an image")
+    return image, image.with_suffix(".json")
+
+
+def _annotation_lock(path: Path) -> threading.Lock:
+    key = str(path)
+    with _ANNOTATION_LOCKS_GUARD:
+        return _ANNOTATION_LOCKS.setdefault(key, threading.Lock())
+
+
+def _validated_annotation(annotation: dict, image: Path) -> dict:
+    if not isinstance(annotation, dict):
+        raise HTTPException(status_code=422, detail="Annotation must be an object")
+    if not isinstance(annotation.get("shapes", []), list):
+        raise HTTPException(status_code=422, detail="Annotation shapes must be a list")
+    normalized = dict(annotation)
+    normalized["imagePath"] = image.name
+    normalized.setdefault("imageData", None)
+    normalized.setdefault("flags", {})
+    normalized.setdefault("shapes", [])
+    return normalized
+
+
+def _atomic_write_annotation(
+    annotation_path: Path,
+    annotation: dict,
+    expected_revision: str | None,
+) -> str:
+    lock = _annotation_lock(annotation_path)
+    with lock:
+        current_revision = _file_revision(annotation_path)
+        revision_conflict = (
+            expected_revision == "__missing__" and current_revision is not None
+        ) or (
+            expected_revision not in {None, "*", "__missing__"}
+            and expected_revision != current_revision
+        )
+        if revision_conflict:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Annotation was modified by another client",
+                    "current_revision": current_revision,
+                },
+            )
+        payload = json.dumps(
+            annotation, ensure_ascii=False, indent=2
+        ).encode("utf-8")
+        temp_path = annotation_path.with_name(
+            f".{annotation_path.name}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            temp_path.write_bytes(payload)
+            os.replace(temp_path, annotation_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        return hashlib.sha256(payload).hexdigest()
 
 
 @router.get("/v1/data/directories")
@@ -90,6 +184,7 @@ async def list_data_directories(
             directories.append(
                 {
                     "path": _relative_text(current_path, root),
+                    "absolute_path": str(current_path),
                     "name": current_path.name,
                     "image_count": image_count,
                 }
@@ -110,17 +205,20 @@ async def list_data_files(
 
     iterator = directory.rglob("*") if recursive else directory.glob("*")
     files = []
-    for item in iterator:
+    for item in sorted(iterator):
         if not item.is_file():
             continue
         if item.suffix.lower() not in IMAGE_SUFFIXES | ANNOTATION_SUFFIXES:
             continue
-        files.append(
-            {
-                "path": _relative_text(item, root),
-                "size": item.stat().st_size,
-            }
-        )
+        file_data = {
+            "path": _relative_text(item, root),
+            "size": item.stat().st_size,
+        }
+        if item.suffix.lower() in IMAGE_SUFFIXES:
+            annotation_path = item.with_suffix(".json")
+            file_data["annotation_exists"] = annotation_path.is_file()
+            file_data["annotation_revision"] = _file_revision(annotation_path)
+        files.append(file_data)
         if len(files) >= 10000:
             raise HTTPException(
                 status_code=413,
@@ -139,6 +237,95 @@ async def download_data_file(path: str = Query(...)):
     if file_path.suffix.lower() not in IMAGE_SUFFIXES | ANNOTATION_SUFFIXES:
         raise HTTPException(status_code=415, detail="Unsupported dataset file")
     return FileResponse(file_path, filename=file_path.name)
+
+
+@router.get("/v1/data/annotation")
+async def get_data_annotation(image_path: str = Query(...)):
+    """Read the annotation paired with one server-side image."""
+    root = _root_from_env("AUTOLABEL_DATA_ROOT", "/data/mfl/langgao")
+    image, annotation_path = _annotation_path_for_image(root, image_path)
+    if not annotation_path.is_file():
+        return SuccessResponse(
+            data={
+                "image_path": _relative_text(image, root),
+                "exists": False,
+                "revision": None,
+                "annotation": None,
+            }
+        )
+    try:
+        annotation = json.loads(annotation_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=422, detail="Server annotation is not valid JSON"
+        ) from exc
+    return SuccessResponse(
+        data={
+            "image_path": _relative_text(image, root),
+            "exists": True,
+            "revision": _file_revision(annotation_path),
+            "annotation": annotation,
+        }
+    )
+
+
+@router.put("/v1/data/annotation")
+async def put_data_annotation(
+    image_path: str = Query(...),
+    annotation: dict = Body(...),
+    expected_revision: str | None = Header(
+        default=None, alias="If-Match"
+    ),
+):
+    """Atomically save one annotation beside its server-side image."""
+    root = _root_from_env("AUTOLABEL_DATA_ROOT", "/data/mfl/langgao")
+    image, annotation_path = _annotation_path_for_image(root, image_path)
+    normalized = _validated_annotation(annotation, image)
+    revision = _atomic_write_annotation(
+        annotation_path, normalized, expected_revision
+    )
+    return SuccessResponse(
+        data={
+            "image_path": _relative_text(image, root),
+            "annotation_path": _relative_text(annotation_path, root),
+            "revision": revision,
+        }
+    )
+
+
+@router.delete("/v1/data/annotation")
+async def delete_data_annotation(
+    image_path: str = Query(...),
+    expected_revision: str | None = Header(
+        default=None, alias="If-Match"
+    ),
+):
+    """Delete one server annotation with optimistic concurrency control."""
+    root = _root_from_env("AUTOLABEL_DATA_ROOT", "/data/mfl/langgao")
+    image, annotation_path = _annotation_path_for_image(root, image_path)
+    with _annotation_lock(annotation_path):
+        current_revision = _file_revision(annotation_path)
+        revision_conflict = (
+            expected_revision == "__missing__" and current_revision is not None
+        ) or (
+            expected_revision not in {None, "*", "__missing__"}
+            and expected_revision != current_revision
+        )
+        if revision_conflict:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Annotation was modified by another client",
+                    "current_revision": current_revision,
+                },
+            )
+        annotation_path.unlink(missing_ok=True)
+    return SuccessResponse(
+        data={
+            "image_path": _relative_text(image, root),
+            "deleted": current_revision is not None,
+        }
+    )
 
 
 def _validate_model_archive(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:

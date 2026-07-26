@@ -7,7 +7,7 @@ import os
 import os.path as osp
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 import cv2
@@ -281,6 +281,10 @@ class LabelingWidget(LabelDialog):
         self.fn_to_index = {}
         self.cache_auto_label = None
         self.cache_auto_label_group_id = None
+        self.remote_storage_client = None
+        self.remote_dataset_path = None
+        self.remote_annotation_revision = None
+        self.remote_file_metadata = {}
 
         # see configs/anylabeling_config.yaml for valid configuration
         if config is None:
@@ -2709,7 +2713,10 @@ class LabelingWidget(LabelDialog):
             Qt.Orientation.Vertical: {},
         }  # key=filename, value=scroll_value
 
-        if filename is not None and osp.isdir(filename):
+        if filename is not None and (
+            osp.isdir(filename)
+            or RemoteStorageClient.is_server_uri(filename)
+        ):
             self.import_image_folder(filename, load=False)
         else:
             self.filename = filename
@@ -3296,6 +3303,12 @@ class LabelingWidget(LabelDialog):
         self.set_dirty()
 
     def get_label_file_list(self):
+        if self._is_remote_path(self.filename):
+            return [
+                RemoteStorageClient.label_uri(image_uri)
+                for image_uri, metadata in self.remote_file_metadata.items()
+                if metadata.get("annotation_exists")
+            ]
         label_file_list = []
         if not self.image_list and self.filename:
             dir_path, filename = osp.split(self.filename)
@@ -4755,6 +4768,10 @@ class LabelingWidget(LabelDialog):
             self.scroll_area.setVisible(False)
 
     def save_attributes(self, _shapes):
+        if self._is_remote_path(self.image_path):
+            return self.save_labels(
+                RemoteStorageClient.label_uri(self.image_path)
+            )
         filename = osp.splitext(self.image_path)[0] + ".json"
         if self.output_dir:
             label_file_without_path = osp.basename(filename)
@@ -4830,9 +4847,18 @@ class LabelingWidget(LabelDialog):
             # disable allows next and previous image to proceed
             # self.filename = filename
             return True
-        except LabelFileError as e:
+        except Exception as e:
+            response = getattr(e, "response", None)
+            if response is not None and response.status_code == 409:
+                message = self.tr(
+                    "The server annotation changed after it was opened. "
+                    "Reload this image before saving to avoid overwriting "
+                    "another user's work."
+                )
+            else:
+                message = self.tr("<b>%s</b>") % e
             self.error_message(
-                self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
+                self.tr("Error saving label data"), message
             )
             return False
 
@@ -5181,6 +5207,44 @@ class LabelingWidget(LabelDialog):
             flags[key] = flag
         self.other_data[CHECKED_FIELD] = self._annotation_checked()
         try:
+            if self._is_remote_path(self.image_path):
+                image_name = PurePosixPath(
+                    RemoteStorageClient.normalize_server_path(self.image_path)
+                ).name
+                annotation = LabelFile.create_data(
+                    shapes=shapes,
+                    image_path=image_name,
+                    image_data=None,
+                    image_height=self.image.height(),
+                    image_width=self.image.width(),
+                    other_data=self.other_data,
+                    flags=flags,
+                )
+                result = self._remote_client().save_annotation(
+                    self.image_path,
+                    annotation,
+                    self.remote_annotation_revision,
+                )
+                self.remote_annotation_revision = result["revision"]
+                metadata = self.remote_file_metadata.setdefault(
+                    self.image_path, {}
+                )
+                metadata["annotation_exists"] = True
+                metadata["annotation_revision"] = result["revision"]
+                label_file.load_data(
+                    annotation,
+                    image_data=self.image_data,
+                    filename=RemoteStorageClient.label_uri(self.image_path),
+                )
+                self.label_file = label_file
+                item = self._current_file_item()
+                if item is not None:
+                    item.setCheckState(Qt.CheckState.Checked)
+                    self._set_file_item_checked(
+                        item, self._annotation_checked()
+                    )
+                return True
+
             image_path = osp.relpath(self.image_path, osp.dirname(filename))
             image_data = (
                 self.image_data if self._config["store_data"] else None
@@ -5212,10 +5276,17 @@ class LabelingWidget(LabelDialog):
             # disable allows next and previous image to proceed
             # self.filename = filename
             return True
-        except LabelFileError as e:
-            self.error_message(
-                self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
-            )
+        except Exception as e:
+            response = getattr(e, "response", None)
+            if response is not None and response.status_code == 409:
+                message = self.tr(
+                    "The server annotation changed after it was opened. "
+                    "Reload this image before saving to avoid overwriting "
+                    "another user's work."
+                )
+            else:
+                message = self.tr("<b>%s</b>") % e
+            self.error_message(self.tr("Error saving label data"), message)
             return False
 
     def duplicate_selected_shape(self):
@@ -6018,56 +6089,95 @@ class LabelingWidget(LabelDialog):
         if filename is None:
             filename = self.settings.value("filename", "")
         filename = str(filename)
-        if not QtCore.QFile.exists(filename):
+        is_remote = self._is_remote_path(filename)
+        if not is_remote and not QtCore.QFile.exists(filename):
             self.error_message(
                 self.tr("Error opening file"),
                 self.tr("No such file: <b>%s</b>") % filename,
             )
             return False
 
-        # assumes same name, but json extension
-        label_file = osp.splitext(filename)[0] + ".json"
-        image_dir = None
-        if self.output_dir:
-            image_dir = osp.dirname(filename)
-            label_file_without_path = osp.basename(label_file)
-            label_file = self.output_dir + "/" + label_file_without_path
-
-        if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
-            label_file
-        ):
+        if is_remote:
             try:
-                self.label_file = LabelFile(label_file, image_dir)
-            except LabelFileError as e:
+                client = self._remote_client()
+                self.image_data = client.read_file(filename)
+                annotation_state = client.get_annotation(filename)
+                self.remote_annotation_revision = annotation_state.get(
+                    "revision"
+                )
+                self.image_path = filename
+                if annotation_state.get("exists"):
+                    self.label_file = LabelFile()
+                    self.label_file.load_data(
+                        annotation_state["annotation"],
+                        image_data=self.image_data,
+                        filename=client.label_uri(filename),
+                    )
+                    self.other_data = self.label_file.other_data
+                else:
+                    self.label_file = None
+                    self.other_data = {CHECKED_FIELD: False}
+            except Exception as e:
                 self.error_message(
                     self.tr("Error opening file"),
                     self.tr(
                         "<p><b>%s</b></p>"
-                        "<p>Make sure <i>%s</i> is a valid label file."
+                        "<p>Unable to read server image or annotation: "
+                        "<i>%s</i>.</p>"
                     )
-                    % (e, label_file),
+                    % (e, filename),
                 )
-                self.status(self.tr("Error reading %s") % label_file)
+                self.status(self.tr("Error reading %s") % filename)
                 return False
-            self.image_data = self.label_file.image_data
-            self.image_path = osp.join(
-                osp.dirname(label_file),
-                self.label_file.image_path,
-            )
-            self.other_data = self.label_file.other_data
             self.other_data[CHECKED_FIELD] = self._annotation_checked()
             with QtCore.QSignalBlocker(self.shape_text_edit):
                 self.shape_text_edit.setPlainText(
                     self.other_data.get("description", "")
                 )
         else:
-            self.image_data = LabelFile.load_image_file(filename)
-            if self.image_data:
-                self.image_path = filename
-            self.label_file = None
-            self.other_data = {CHECKED_FIELD: False}
-            with QtCore.QSignalBlocker(self.shape_text_edit):
-                self.shape_text_edit.setPlainText("")
+            # assumes same name, but json extension
+            label_file = osp.splitext(filename)[0] + ".json"
+            image_dir = None
+            if self.output_dir:
+                image_dir = osp.dirname(filename)
+                label_file_without_path = osp.basename(label_file)
+                label_file = self.output_dir + "/" + label_file_without_path
+
+            if QtCore.QFile.exists(label_file) and LabelFile.is_label_file(
+                label_file
+            ):
+                try:
+                    self.label_file = LabelFile(label_file, image_dir)
+                except LabelFileError as e:
+                    self.error_message(
+                        self.tr("Error opening file"),
+                        self.tr(
+                            "<p><b>%s</b></p>"
+                            "<p>Make sure <i>%s</i> is a valid label file."
+                        )
+                        % (e, label_file),
+                    )
+                    self.status(self.tr("Error reading %s") % label_file)
+                    return False
+                self.image_data = self.label_file.image_data
+                self.image_path = osp.join(
+                    osp.dirname(label_file),
+                    self.label_file.image_path,
+                )
+                self.other_data = self.label_file.other_data
+                self.other_data[CHECKED_FIELD] = self._annotation_checked()
+                with QtCore.QSignalBlocker(self.shape_text_edit):
+                    self.shape_text_edit.setPlainText(
+                        self.other_data.get("description", "")
+                    )
+            else:
+                self.image_data = LabelFile.load_image_file(filename)
+                if self.image_data:
+                    self.image_path = filename
+                self.label_file = None
+                self.other_data = {CHECKED_FIELD: False}
+                with QtCore.QSignalBlocker(self.shape_text_edit):
+                    self.shape_text_edit.setPlainText("")
         self.shape_text_label.setText(self.tr("Image Description"))
         self.shape_text_edit.setDisabled(False)
 
@@ -6460,6 +6570,9 @@ class LabelingWidget(LabelDialog):
 
     def save_file(self, _value=False):
         assert not self.image.isNull(), "cannot save empty image"
+        if self._is_remote_path(self.image_path):
+            self._save_file(RemoteStorageClient.label_uri(self.image_path))
+            return
         if self.label_file:
             # DL20180323 - overwrite when in directory
             self._save_file(self.label_file.filename)
@@ -6471,6 +6584,9 @@ class LabelingWidget(LabelDialog):
 
     def save_file_as(self, _value=False):
         assert not self.image.isNull(), "cannot save empty image"
+        if self._is_remote_path(self.image_path):
+            self._save_file(RemoteStorageClient.label_uri(self.image_path))
+            return
         self._save_file(self.save_file_dialog())
 
     def save_file_dialog(self):
@@ -6513,7 +6629,11 @@ class LabelingWidget(LabelDialog):
 
     def _save_file(self, filename):
         if filename and self.save_labels(filename):
-            self.add_recent_file(filename)
+            self.add_recent_file(
+                self.image_path
+                if self._is_remote_path(self.image_path)
+                else filename
+            )
             self.set_clean()
 
     def close_file(self, _value=False):
@@ -6569,6 +6689,8 @@ class LabelingWidget(LabelDialog):
         self.compare_view_slider.hide_slider()
 
     def get_label_file(self):
+        if self._is_remote_path(self.image_path):
+            return RemoteStorageClient.label_uri(self.image_path)
         if self.label_file:
             return self.label_file.filename
         base = self.image_path if self.image_path else self.filename
@@ -6580,6 +6702,8 @@ class LabelingWidget(LabelDialog):
         return lf
 
     def get_image_file(self):
+        if self._is_remote_path(self.image_path):
+            return self.image_path
         if not self.filename.lower().endswith(".json"):
             image_file = self.filename
         else:
@@ -6614,6 +6738,31 @@ class LabelingWidget(LabelDialog):
             return
 
         label_file = self.get_label_file()
+        if self._is_remote_path(self.image_path):
+            try:
+                self._remote_client().delete_annotation(
+                    self.image_path, self.remote_annotation_revision
+                )
+                self.remote_annotation_revision = None
+                metadata = self.remote_file_metadata.setdefault(
+                    self.image_path, {}
+                )
+                metadata["annotation_exists"] = False
+                metadata["annotation_revision"] = None
+                item = self._current_file_item()
+                if item is not None:
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                    self._set_file_item_checked(item, False)
+                filename = self.filename
+                self.reset_state()
+                self.filename = filename
+                if self.filename:
+                    self.load_file(self.filename)
+            except Exception as exc:
+                self.error_message(
+                    self.tr("Error deleting label data"), str(exc)
+                )
+            return
         if osp.exists(label_file):
             os.remove(label_file)
             logger.info(f"Label file is removed: {label_file}")
@@ -6710,6 +6859,8 @@ class LabelingWidget(LabelDialog):
         if self.filename is None:
             return False
 
+        if self._is_remote_path(self.image_path):
+            return self.remote_annotation_revision is not None
         label_file = self.get_label_file()
         return osp.exists(label_file)
 
@@ -6743,6 +6894,11 @@ class LabelingWidget(LabelDialog):
         )
 
     def current_path(self):
+        if self._is_remote_path(self.filename):
+            relative = PurePosixPath(
+                RemoteStorageClient.normalize_server_path(self.filename)
+            )
+            return RemoteStorageClient.server_uri(relative.parent)
         return osp.dirname(str(self.filename)) if self.filename else "."
 
     def toggle_visibility_shapes(self, value):
@@ -6811,17 +6967,26 @@ class LabelingWidget(LabelDialog):
         self.canvas.end_move(copy=False)
         self.set_dirty()
 
+    @staticmethod
+    def _is_remote_path(path):
+        return RemoteStorageClient.is_server_uri(path)
+
+    def _remote_client(self):
+        if self.remote_storage_client is None:
+            self.remote_storage_client = RemoteStorageClient()
+        return self.remote_storage_client
+
     def open_server_dataset(self):
         if not self.may_continue():
             return
         try:
-            client = RemoteStorageClient()
+            client = self._remote_client()
             directories = client.list_directories()
-            choices = [
-                item["path"]
-                for item in directories
-                if item.get("path") and item.get("image_count", 0) > 0
-            ]
+            choices = []
+            for item in directories:
+                if not item.get("path") or item.get("image_count", 0) <= 0:
+                    continue
+                choices.append(item.get("absolute_path") or item["path"])
             if not choices:
                 QMessageBox.information(
                     self,
@@ -6836,23 +7001,16 @@ class LabelingWidget(LabelDialog):
                 self.tr("Server directory:"),
                 choices,
                 0,
-                False,
+                True,
             )
             if not accepted or not server_path:
                 return
 
-            cache_root = Path(
-                os.getenv(
-                    "XANYLABELING_SERVER_DATA_CACHE",
-                    str(Path.cwd() / "server_data_cache"),
-                )
-            ).resolve()
             QtWidgets.QApplication.setOverrideCursor(
                 Qt.CursorShape.WaitCursor
             )
             QtWidgets.QApplication.processEvents()
-            local_path = client.sync_dataset(server_path, cache_root)
-            self.import_image_folder(str(local_path))
+            self.import_server_dataset(server_path)
         except Exception as exc:
             logger.exception("Failed to open server dataset")
             QMessageBox.critical(
@@ -6968,6 +7126,17 @@ class LabelingWidget(LabelDialog):
         if not self.may_continue() or not dirpath:
             return
 
+        dirpath = str(dirpath)
+        if self._is_remote_path(dirpath) or (
+            dirpath.startswith("/") and not osp.exists(dirpath)
+        ):
+            self.import_server_dataset(dirpath, load=load)
+            return
+
+        self.remote_dataset_path = None
+        self.remote_annotation_revision = None
+        self.remote_file_metadata = {}
+
         if self.compare_view_manager.is_active():
             self.close_compare_view(confirm=False)
 
@@ -7020,6 +7189,59 @@ class LabelingWidget(LabelDialog):
 
         if image_files and self._config.get("exif_scan_enabled", True):
             self.async_exif_scanner.start_scan(image_files)
+
+    def import_server_dataset(self, server_path, load=True):
+        """Open a server dataset without copying images or labels locally."""
+        if not self.may_continue() or not server_path:
+            return
+        if self.compare_view_manager.is_active():
+            self.close_compare_view(confirm=False)
+
+        client = self._remote_client()
+        relative_path = client.normalize_server_path(server_path)
+        files = client.list_files(relative_path)
+        image_suffixes = tuple(utils.get_supported_image_extensions())
+        image_entries = [
+            item
+            for item in files
+            if item["path"].lower().endswith(image_suffixes)
+        ]
+        image_entries.sort(key=lambda item: item["path"].lower())
+        if not image_entries:
+            raise RuntimeError(
+                self.tr("No supported images exist in the server directory.")
+            )
+
+        self.remote_dataset_path = relative_path
+        self.remote_annotation_revision = None
+        self.remote_file_metadata = {}
+        self.last_open_dir = client.server_uri(relative_path)
+        self.filename = None
+        self.file_list_widget.clear()
+        self.fn_to_index.clear()
+
+        for item_data in image_entries:
+            image_uri = client.server_uri(item_data["path"])
+            label_uri = client.label_uri(image_uri)
+            item = self._create_file_list_item(image_uri, label_uri)
+            annotation_exists = bool(item_data.get("annotation_exists"))
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if annotation_exists
+                else Qt.CheckState.Unchecked
+            )
+            self._set_file_item_checked(item, False)
+            self.file_list_widget.addItem(item)
+            self.fn_to_index[image_uri] = self.file_list_widget.count() - 1
+            self.remote_file_metadata[image_uri] = item_data
+
+        has_multiple = self.file_list_widget.count() > 1
+        self.actions.open_next_image.setEnabled(has_multiple)
+        self.actions.open_prev_image.setEnabled(has_multiple)
+        self.actions.open_next_unchecked_image.setEnabled(has_multiple)
+        self.actions.open_prev_unchecked_image.setEnabled(has_multiple)
+        self.toggle_actions(True)
+        self.open_next_image(load=load)
 
     def toggle_auto_labeling_widget(self):
         """Toggle auto labeling widget visibility."""
