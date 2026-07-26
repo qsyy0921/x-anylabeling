@@ -4,12 +4,6 @@ class DownloadCancelledError(Exception):
     pass
 
 
-class DownloadCancelledError(Exception):
-    """Raised when a model download is cancelled by the user."""
-
-    pass
-
-
 class AutoLabelingResult:
     def __init__(
         self,
@@ -18,6 +12,7 @@ class AutoLabelingResult:
         description="",
         image_path=None,
         preview_overlay=None,
+        preview_shape_count=None,
     ):
         """Initialize AutoLabelingResult
 
@@ -36,6 +31,7 @@ class AutoLabelingResult:
         self.description = description
         self.image_path = image_path
         self.preview_overlay = preview_overlay
+        self.preview_shape_count = preview_shape_count
 
 
 class AutoLabelingMode:

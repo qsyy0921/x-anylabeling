@@ -271,6 +271,7 @@ class RemoteServer(Model):
                 replace=replace,
                 description=description,
                 preview_overlay=preview_overlay,
+                preview_shape_count=data.get("preview_shape_count"),
             )
 
         except Exception as e:

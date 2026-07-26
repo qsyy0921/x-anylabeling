@@ -1,4 +1,5 @@
 import functools
+import hashlib
 import html
 import json
 import math
@@ -145,6 +146,57 @@ def _create_file_status_icon(color):
     painter.drawEllipse(2, 2, 8, 8)
     painter.end()
     return QtGui.QIcon(pixmap)
+
+
+class _ServerOverlaySyncSignals(QtCore.QObject):
+    finished = QtCore.pyqtSignal(int, str, str, object, object)
+
+
+class _ServerOverlaySyncTask(QtCore.QRunnable):
+    """Rasterize an annotation snapshot without blocking the Qt event loop."""
+
+    def __init__(
+        self,
+        revision,
+        image_key,
+        digest,
+        width,
+        height,
+        shapes,
+    ):
+        super().__init__()
+        self.revision = revision
+        self.image_key = image_key
+        self.digest = digest
+        self.width = width
+        self.height = height
+        self.shapes = shapes
+        self.signals = _ServerOverlaySyncSignals()
+
+    @QtCore.pyqtSlot()
+    def run(self):
+        try:
+            revision, overlay = RemoteStorageClient().render_overlay(
+                self.width,
+                self.height,
+                self.shapes,
+                self.revision,
+            )
+            self.signals.finished.emit(
+                revision,
+                self.image_key,
+                self.digest,
+                overlay,
+                None,
+            )
+        except Exception as e:
+            self.signals.finished.emit(
+                self.revision,
+                self.image_key,
+                self.digest,
+                None,
+                str(e),
+            )
 
 
 class LabelingWidget(LabelDialog):
@@ -482,6 +534,19 @@ class LabelingWidget(LabelDialog):
         self.canvas.selection_changed.connect(self.shape_selection_changed)
         self.canvas.drawing_polygon.connect(self.toggle_drawing_sensitive)
         self.canvas.edit_label_requested.connect(self.edit_label)
+
+        self._server_overlay_sync_enabled = False
+        self._server_overlay_generation = 0
+        self._server_overlay_applied_digest = None
+        self._server_overlay_active_request = None
+        self._server_overlay_pending = False
+        self._server_overlay_sync_timer = QtCore.QTimer(self)
+        self._server_overlay_sync_timer.setSingleShot(True)
+        self._server_overlay_sync_timer.setInterval(180)
+        self._server_overlay_sync_timer.timeout.connect(
+            self._dispatch_server_overlay_sync
+        )
+
         # Keep the brush-edit toggle in sync when the canvas exits brush
         # mode on its own (e.g. via a right-click).
         self.canvas.brush_mode_changed.connect(self.on_brush_mode_changed)
@@ -2908,6 +2973,8 @@ class LabelingWidget(LabelDialog):
         utils.add_actions(self.menus.edit, actions + self.actions.editMenu)
 
     def set_dirty(self):
+        self._schedule_server_overlay_sync()
+
         # Even if we autosave the file, we keep the ability to undo
         self.actions.undo.setEnabled(self.canvas.is_shape_restorable)
 
@@ -3010,6 +3077,7 @@ class LabelingWidget(LabelDialog):
         self.statusBar().showMessage(message, delay)
 
     def reset_state(self):
+        self._reset_server_overlay_sync()
         self._reset_label_loop()
         self.select_loop_count = -1
         self.label_list.clear()
@@ -5166,6 +5234,7 @@ class LabelingWidget(LabelDialog):
             shape, item.checkState() == Qt.CheckState.Checked
         )
         self._update_select_toggle_button_tooltip()
+        self._schedule_server_overlay_sync()
         if (
             hasattr(self, "navigator_dialog")
             and self.navigator_dialog.isVisible()
@@ -6879,11 +6948,18 @@ class LabelingWidget(LabelDialog):
         if not preview_pixmap.isNull():
             # Shapes remain in annotation data and the object list, but the
             # server-rendered raster replaces expensive per-shape painting.
-            for shape in auto_labeling_result.shapes:
-                self.canvas.visible[shape] = False
+            for shape in self.canvas.shapes:
+                if shape.label not in {
+                    AutoLabelingMode.ADD,
+                    AutoLabelingMode.REMOVE,
+                }:
+                    self.canvas.visible[shape] = False
             self.canvas.set_server_result_overlay(
                 preview_pixmap, replace=auto_labeling_result.replace
             )
+            self._activate_server_overlay_sync()
+        elif auto_labeling_result.replace:
+            self._reset_server_overlay_sync(clear_overlay=True)
 
         # Set image description
         if auto_labeling_result.description:
@@ -6895,6 +6971,144 @@ class LabelingWidget(LabelDialog):
             self.shape_text_edit.setDisabled(False)
 
         self.set_dirty()
+
+    def _server_overlay_image_key(self):
+        if not self.filename:
+            return ""
+        return osp.normcase(osp.normpath(osp.abspath(str(self.filename))))
+
+    def _server_overlay_shapes_payload(self):
+        prompt_labels = {
+            AutoLabelingMode.ADD,
+            AutoLabelingMode.REMOVE,
+        }
+        shapes = []
+        for shape in self.canvas.shapes:
+            if shape.label in prompt_labels or not shape.visible:
+                continue
+            shapes.append(
+                {
+                    "label": shape.label,
+                    "shape_type": shape.shape_type or "polygon",
+                    "points": [
+                        [float(point.x()), float(point.y())]
+                        for point in shape.points
+                    ],
+                }
+            )
+        return shapes
+
+    @staticmethod
+    def _server_overlay_digest(shapes):
+        payload = json.dumps(
+            shapes,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _activate_server_overlay_sync(self):
+        self._server_overlay_sync_enabled = True
+        self._server_overlay_generation += 1
+        self._server_overlay_pending = False
+        # The prediction overlay contains only the model's new result. Force
+        # one cheap redraw so pre-existing/locked annotations are included.
+        self._server_overlay_applied_digest = None
+
+    def _reset_server_overlay_sync(self, clear_overlay=False):
+        if not hasattr(self, "_server_overlay_sync_timer"):
+            return
+        self._server_overlay_generation += 1
+        self._server_overlay_sync_timer.stop()
+        self._server_overlay_sync_enabled = False
+        self._server_overlay_applied_digest = None
+        self._server_overlay_active_request = None
+        self._server_overlay_pending = False
+        if clear_overlay and hasattr(self, "canvas"):
+            self.canvas.set_server_result_overlay(None, replace=True)
+
+    def _schedule_server_overlay_sync(self):
+        if (
+            not getattr(self, "_server_overlay_sync_enabled", False)
+            or not self.filename
+            or not self.image
+            or self.image.isNull()
+        ):
+            return
+        self._server_overlay_generation += 1
+        self._server_overlay_sync_timer.start()
+
+    def _dispatch_server_overlay_sync(self):
+        if not self._server_overlay_sync_enabled:
+            return
+        if self._server_overlay_active_request is not None:
+            self._server_overlay_pending = True
+            return
+
+        shapes = self._server_overlay_shapes_payload()
+        digest = self._server_overlay_digest(shapes)
+        if digest == self._server_overlay_applied_digest:
+            return
+
+        revision = self._server_overlay_generation
+        image_key = self._server_overlay_image_key()
+        request_key = (revision, image_key)
+        self._server_overlay_active_request = request_key
+        task = _ServerOverlaySyncTask(
+            revision,
+            image_key,
+            digest,
+            self.image.width(),
+            self.image.height(),
+            shapes,
+        )
+        task.signals.finished.connect(self._on_server_overlay_sync_finished)
+        QtCore.QThreadPool.globalInstance().start(task)
+
+    @QtCore.pyqtSlot(int, str, str, object, object)
+    def _on_server_overlay_sync_finished(
+        self,
+        revision,
+        image_key,
+        digest,
+        overlay,
+        error,
+    ):
+        request_key = (revision, image_key)
+        if self._server_overlay_active_request != request_key:
+            return
+        self._server_overlay_active_request = None
+
+        is_current = (
+            self._server_overlay_sync_enabled
+            and revision == self._server_overlay_generation
+            and image_key == self._server_overlay_image_key()
+        )
+        if is_current and not error and overlay:
+            preview_pixmap = QtGui.QPixmap()
+            preview_pixmap.loadFromData(overlay, "PNG")
+            if not preview_pixmap.isNull():
+                for shape in self.canvas.shapes:
+                    if shape.label not in {
+                        AutoLabelingMode.ADD,
+                        AutoLabelingMode.REMOVE,
+                    }:
+                        self.canvas.visible[shape] = False
+                self.canvas.set_server_result_overlay(
+                    preview_pixmap, replace=True
+                )
+                self._server_overlay_applied_digest = digest
+        elif is_current and error:
+            logger.warning(f"Server overlay refresh failed: {error}")
+            self.status(
+                self.tr("Server overlay refresh failed: %s") % error,
+                5000,
+            )
+
+        if self._server_overlay_pending:
+            self._server_overlay_pending = False
+            QtCore.QTimer.singleShot(0, self._dispatch_server_overlay_sync)
 
     def clear_auto_labeling_marks(self):
         """Clear auto labeling marks from the current image."""

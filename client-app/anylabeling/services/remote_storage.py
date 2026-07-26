@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import base64
 import os
 from pathlib import Path
-from urllib.parse import quote
 
 import requests
 
@@ -93,6 +93,32 @@ class RemoteStorageClient:
         )
         response.raise_for_status()
         return response.json()["data"]["models"]
+
+    def render_overlay(
+        self,
+        width: int,
+        height: int,
+        shapes: list[dict],
+        revision: int,
+    ) -> tuple[int, bytes]:
+        """Ask the server to rasterize the latest annotation state."""
+        response = requests.post(
+            f"{self.server_url}/v1/render-overlay",
+            headers=self.headers,
+            json={
+                "width": width,
+                "height": height,
+                "shapes": shapes,
+                "revision": revision,
+            },
+            timeout=min(self.timeout, 60),
+        )
+        response.raise_for_status()
+        data = response.json()["data"]
+        overlay = data["preview_overlay"]
+        if "," in overlay:
+            overlay = overlay.split(",", 1)[1]
+        return int(data["revision"]), base64.b64decode(overlay)
 
     def install_registry_model(self, model_id: str) -> dict:
         response = requests.post(

@@ -1,11 +1,11 @@
 import base64
+
 import cv2
 import numpy as np
+from fastapi import APIRouter, HTTPException, status
 from loguru import logger
 
-from fastapi import APIRouter, HTTPException, status
-
-from app.schemas.request import PredictRequest
+from app.schemas.request import PredictRequest, RenderOverlayRequest
 from app.schemas.response import (
     ErrorDetail,
     ErrorResponse,
@@ -16,9 +16,11 @@ from app.schemas.response import (
 router = APIRouter()
 
 
-def _render_preview_overlay(image, shapes):
-    """Render vector predictions once on the server as a transparent PNG."""
-    height, width = image.shape[:2]
+def _render_preview_overlay_for_size(width, height, shapes):
+    """Render vector annotations as a transparent full-resolution PNG."""
+    if width <= 0 or height <= 0 or width * height > 64_000_000:
+        raise ValueError("Invalid overlay dimensions")
+
     overlay = np.zeros((height, width, 4), dtype=np.uint8)
     fill_color = (82, 211, 164, 72)
     line_color = (44, 181, 132, 235)
@@ -34,8 +36,8 @@ def _render_preview_overlay(image, shapes):
         shape_type = shape.get("shape_type", "polygon")
 
         if shape_type == "rectangle" and len(pts) >= 2:
-            x1, y1 = pts[0]
-            x2, y2 = pts[1]
+            x1, y1 = pts.min(axis=0)
+            x2, y2 = pts.max(axis=0)
             cv2.rectangle(overlay, (x1, y1), (x2, y2), fill_color, -1)
             cv2.rectangle(
                 overlay, (x1, y1), (x2, y2), line_color, line_width
@@ -55,6 +57,40 @@ def _render_preview_overlay(image, shapes):
     return "data:image/png;base64," + base64.b64encode(buffer).decode("ascii")
 
 
+def _render_preview_overlay(image, shapes):
+    """Render vector predictions once on the server as a transparent PNG."""
+    height, width = image.shape[:2]
+    return _render_preview_overlay_for_size(width, height, shapes)
+
+
+@router.post("/v1/render-overlay")
+async def render_overlay(request: RenderOverlayRequest):
+    """Redraw edited annotations without loading or running an AI model."""
+    try:
+        overlay = _render_preview_overlay_for_size(
+            request.width,
+            request.height,
+            request.shapes,
+        )
+        return SuccessResponse(
+            data={
+                "revision": request.revision,
+                "preview_overlay": overlay,
+                "preview_shape_count": len(request.shapes),
+            }
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        ) from e
+    except Exception as e:
+        logger.error(f"Overlay rendering error: {e}")
+        return ErrorResponse(
+            error=ErrorDetail(code="OVERLAY_RENDER_ERROR", message=str(e))
+        )
+
+
 @router.post("/v1/predict")
 async def predict(request: PredictRequest):
     """Execute prediction on an image.
@@ -65,7 +101,7 @@ async def predict(request: PredictRequest):
     Returns:
         Success response with prediction results or error response.
     """
-    from app.main import loader, inference_executor
+    from app.main import inference_executor, loader
 
     try:
         _ = loader.get_model(request.model)

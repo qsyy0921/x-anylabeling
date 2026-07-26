@@ -1,5 +1,6 @@
-from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel
 
 
 class PredictRequest(BaseModel):
@@ -8,6 +9,15 @@ class PredictRequest(BaseModel):
     model: str
     image: str
     params: Dict[str, Any] = {}
+
+
+class RenderOverlayRequest(BaseModel):
+    """Render the current client-side annotation state on the server."""
+
+    width: int
+    height: int
+    shapes: List[Dict[str, Any]]
+    revision: int = 0
 
 
 class VideoInitRequest(BaseModel):
